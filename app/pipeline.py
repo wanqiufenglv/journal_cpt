@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from ..processing.crop import crop_blocks
 from ..processing.ingest import scan_input_journals, scan_journals
 from ..processing.normalize import normalize_pages
 from ..processing.render import render_pages
+from ..processing.watermark import clean_pdf_watermarks
 from ..services.clients import VlmPool
 from ..services.mineru import mineru_cache_is_valid, parse_journal_with_mineru
 from ..tasks.dedup import deduplicate
@@ -588,24 +589,37 @@ def _process_journal(journal: Any, cfg: dict[str, Any]) -> dict[str, Any]:
     logger.info("start journal_id=%s pdf=%s", journal.journal_id, journal.source_pdf)
     append_jsonl(output_dir / cfg["paths"]["manifest"], asdict(journal))
     try:
+        watermark_result = clean_pdf_watermarks(journal, cfg)
+        working_journal = replace(journal, source_pdf=watermark_result.cleaned_pdf) if watermark_result.cleaned else journal
+        working_cfg = cfg
+        if watermark_result.cleaned:
+            working_cfg = deepcopy(cfg)
+            working_cfg["runtime"]["reuse_mineru"] = False
+            working_cfg["runtime"]["reuse_normalized"] = False
+            working_cfg["runtime"]["reuse_samples"] = False
+            working_cfg["runtime"]["reuse_exports"] = False
+            working_cfg["runtime"]["rerender_pages"] = True
+        state.checkpoint("watermark_cleaning", asdict(watermark_result))
+
         if (
-            bool(cfg["runtime"].get("reuse_exports"))
-            and _export_reuse_ready(output_dir, cfg)
-            and mineru_cache_is_valid(journal, cfg)
+            bool(working_cfg["runtime"].get("reuse_exports"))
+            and _export_reuse_ready(output_dir, working_cfg)
+            and mineru_cache_is_valid(working_journal, working_cfg)
         ):
             logger.info("reuse exports journal_id=%s", journal.journal_id)
             return {"journal_id": journal.journal_id, "output_dir": str(output_dir), "sample_count": 0, "reused": "exports"}
 
-        render_pages(journal, cfg)
-        state.checkpoint("render_pages", cfg["statuses"]["done"])
-        mineru_result = parse_journal_with_mineru(journal, cfg)
+        render_pages(working_journal, working_cfg)
+        state.checkpoint("render_pages", working_cfg["statuses"]["done"])
+        mineru_result = parse_journal_with_mineru(working_journal, working_cfg)
         content = mineru_result.content
         parsed_path = mineru_result.parsed_path
         image_map = mineru_result.image_map
         state.checkpoint("mineru", mineru_result.status)
-        normalized = normalize_pages(journal, content, parsed_path, image_map, cfg)
+        normalized = normalize_pages(working_journal, content, parsed_path, image_map, working_cfg)
         pages = normalized.pages
         articles = normalized.articles
+        cfg = working_cfg
         crop_blocks(pages, output_dir, cfg)
         state.checkpoint("normalize_and_crop", len(pages))
         export_all_tasks = True
@@ -739,3 +753,6 @@ def run_pipeline(options: PipelineOptions | None = None) -> list[dict[str, Any]]
             ordered_results[futures[future]] = future.result()
     results = [result for result in ordered_results if result is not None]
     return results
+
+
+

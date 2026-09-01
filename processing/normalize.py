@@ -22,6 +22,15 @@ FIGURE_LABEL_RE = re.compile(r"((?:\u56fe|Fig\.?|Figure)\s*[0-9\uff10-\uff19]+)"
 FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９", "0123456789")
 
 
+def _watermark_text_patterns(cfg: dict[str, Any]) -> list[str]:
+    return [str(pattern) for pattern in cfg.get("watermark", {}).get("text_patterns", [])]
+
+
+def _looks_like_watermark_text(text: str, cfg: dict[str, Any]) -> bool:
+    text = clean_text(text)
+    return bool(text) and any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _watermark_text_patterns(cfg))
+
+
 def _page_from_dict(payload: dict[str, Any]) -> JournalPageRecord:
     blocks = [JournalBlockRecord(**block) for block in payload.get("blocks", [])]
     blocks = _sort_blocks_in_reading_order(blocks)
@@ -430,7 +439,7 @@ def _noise(block: JournalBlockRecord) -> bool:
 
 
 def _skip_from_train_text(block: JournalBlockRecord, page_type: str) -> bool:
-    if block.semantic_role in {"journal_header", "footer", "page_number"}:
+    if block.semantic_role in {"journal_header", "footer", "page_number", "watermark"}:
         return True
     if page_type in {"cover", "editorial_board", "table_of_contents", "advertisement_or_notice", "blank"}:
         return True
@@ -1003,6 +1012,8 @@ def _build_page(
     layout_width, layout_height = _layout_size(blocks, width, height)
     for block in blocks:
         block.semantic_role = _semantic_role(block.block_type, block.text, _box(block), layout_height, page_no)
+        if _looks_like_watermark_text(block.text, cfg):
+            block.semantic_role = "watermark"
     column_mode = _assign_columns(blocks, layout_width)
     ordered = _recover_reading_order(blocks, column_mode)
     blocks = _sort_blocks_in_reading_order(ordered)
@@ -1095,3 +1106,5 @@ def normalize_pages(
         write_json(output_dir / page.normalized_page_path, asdict(page))
     write_jsonl(output_dir / cfg["paths"]["articles_manifest"], (asdict(article) for article in articles))
     return NormalizeResult(pages=pages, articles=articles)
+
+

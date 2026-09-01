@@ -20,11 +20,34 @@
 
 ## 运行
 
+### Windows
+
 ```powershell
-python -m journal_cpt.app.cli --input-dir journal_cpt\data --output-root journal_cpt\outputs --reuse-mineru
-python -m journal_cpt.app.cli --input-dir journal_cpt/data --output-root journal_cpt/outputs --tasks article_metadata_extraction,figure_table_formula_to_text
-python -m journal_cpt.app.cli --journal "journal_cpt\data\2602.pdf" --output-root journal_cpt\outputs --reuse-mineru
-python -m journal_cpt.app.cli --input-dir journal_cpt/data --output-root journal_cpt/outputs --task domain_knowledge_corpus
+py -m journal_cpt.app.cli --input-dir journal_cpt\data --output-root journal_cpt\outputs --reuse-mineru
+py -m journal_cpt.app.cli --journal "journal_cpt\data\2602.pdf" --output-root journal_cpt\outputs --reuse-mineru
+py -m journal_cpt.app.cli --journal "journal_cpt\data\自由阻尼梁高频能量流响应的解析模型.pdf" --output-root journal_cpt\outputs --force-rebuild
+py -m journal_cpt.app.cli --input-dir journal_cpt\data --output-root journal_cpt\outputs --tasks article_metadata_extraction,figure_table_formula_to_text
+py -m journal_cpt.app.cli --input-dir journal_cpt\data --output-root journal_cpt\outputs --task domain_knowledge_corpus
+```
+
+### Linux
+
+```bash
+python3 -m journal_cpt.app.cli --input-dir journal_cpt/data --output-root journal_cpt/outputs --reuse-mineru
+python3 -m journal_cpt.app.cli --journal "journal_cpt/data/2602.pdf" --output-root journal_cpt/outputs --reuse-mineru
+python3 -m journal_cpt.app.cli --journal "journal_cpt/data/自由阻尼梁高频能量流响应的解析模型.pdf" --output-root journal_cpt/outputs --force-rebuild
+python3 -m journal_cpt.app.cli --input-dir journal_cpt/data --output-root journal_cpt/outputs --tasks article_metadata_extraction,figure_table_formula_to_text
+python3 -m journal_cpt.app.cli --input-dir journal_cpt/data --output-root journal_cpt/outputs --task domain_knowledge_corpus
+```
+
+流水线会在 MinerU/OCR 和页面渲染前自动尝试清洗 PDF 水印；命中水印时会生成 `preprocessed/{journal_id}_cleaned.pdf`，并强制重建相关缓存。若只想批量生成清洗后的 PDF，可运行：
+
+```powershell
+py clean_watermarked_pdfs.py outputs\watermark_cleaned data\自由阻尼梁高频能量流响应的解析模型.pdf data\等离子体合成射流激励器及其流动控制技术研究进展.pdf
+```
+
+```bash
+python3 clean_watermarked_pdfs.py outputs/watermark_cleaned data/自由阻尼梁高频能量流响应的解析模型.pdf data/等离子体合成射流激励器及其流动控制技术研究进展.pdf
 ```
 
 并发、MinerU 和 VLM provider pool 与 `book_cpt` 保持同一形态：
@@ -55,6 +78,8 @@ VLM provider 的 URL、model、并发和 fallback 策略与书籍侧保持一致
 - `manifest.jsonl`
 - `pages/page_index.jsonl`
 - `articles/articles.jsonl`
+- `preprocessed/{journal_id}_cleaned.pdf`
+- `preprocessed/watermark_cleaning.json`
 - `images/pages/`
 - `images/blocks/`
 - `images/extracted/`

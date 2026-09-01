@@ -21,7 +21,7 @@ def _render_page_worker(args: tuple[str, str, dict[str, Any], int, dict[str, Any
     output_dir = Path(output_dir_text)
     relative = cfg["paths"]["page_images"].format(page_no=page_no)
     target = output_dir / relative
-    if target.exists():
+    if target.exists() and not bool(cfg["runtime"].get("rerender_pages")):
         return relative, None, "skipped", page_no
 
     scale = float(cfg["render"]["dpi"]) / 72.0
@@ -88,4 +88,6 @@ def render_pages(journal: JournalRecord, cfg: dict[str, Any]) -> list[str]:
         page_dir,
     )
     return rendered
+
+
 

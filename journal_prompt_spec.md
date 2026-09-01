@@ -11,6 +11,7 @@
 - 期刊合刊 PDF 可能包含封面、编委会、目录、多篇文章和索引页；这些页面不应直接生成正文知识样本。
 - 单篇论文 PDF 通常只有 5-8 页，章节粒度短，适合围绕“问题-方法-实验/仿真-结果-结论”建模，而不是书籍式章节知识体系。
 - 扫描型 PDF 可能没有可抽取文本层，需要 OCR/版面解析器；在没有 OCR 时只生成低风险页图结构样本或跳过文本型任务。
+- 部分航空期刊 PDF 带有跨正文、公式和图表区域的斜向水印；应在页面渲染、MinerU/OCR 和图表裁剪前优先清洗，避免水印被识别为正文或干扰视觉任务。
 - 图、表、公式和图注/表注在期刊论文中承载核心证据，适合生成图表证据解读、实验条件抽取和证据到结论链条任务。
 
 当前样例数据包括：
@@ -22,10 +23,12 @@
 - `冲偏出跑道影响等级确认方法研究_NormalPdf.pdf`：单篇论文，可抽文本，法规、风险等级和判据推理较多。
 - `2026年第47卷第1期电子期刊.pdf`、`2026年第47卷第2期电子期刊.pdf`：整期期刊，包含封面、编委、目录和多篇文章。
 - `2602.pdf`：扫描型/图像型 PDF，文本层极少或为空，需要 OCR 适配器。
+- `自由阻尼梁高频能量流响应的解析模型.pdf`：单篇论文，存在 `hkxb.buaa.edu.cn` 斜向图片水印，且文本层乱码较多，应先清洗水印再送 OCR/版面解析。
+- `等离子体合成射流激励器及其流动控制技术研究进展.pdf`：长篇综述，存在同类斜向图片水印和底部版权/网址噪声，应优先做对象级水印预处理。
 
 系统整体处理流程：
 
-`PDF -> 页面图片 -> 文本层/OCR/版面解析 -> 双栏阅读顺序恢复 -> 文章切分与元数据抽取 -> 中间结构标准化 -> 任务路由 -> 样本生成或 Qwen3-VL 生成 -> 样本校验 -> 去重 -> ShareGPT/Alpaca/PT 导出`
+`PDF -> 水印预清洗 -> 页面图片 -> 文本层/OCR/版面解析 -> 双栏阅读顺序恢复 -> 文章切分与元数据抽取 -> 中间结构标准化 -> 任务路由 -> 样本生成或 Qwen3-VL 生成 -> 样本校验 -> 去重 -> ShareGPT/Alpaca/PT 导出`
 
 默认情况下，全部期刊任务都应参与生成。命令行入口必须支持自定义任务选择：未传入任务参数时保持全任务生成；传入 `--task` 或 `--tasks` 时，只生成指定任务，并同步收窄任务路由、模型调用白名单、中间样本文件和导出文件范围。
 
@@ -234,6 +237,9 @@ python -m journal_processing.cli --input-dir 期刊/data --output-root 期刊/ou
   outputs/
     manifest.jsonl
     {journal_id}_{pdf_name_safe}/
+      preprocessed/
+        {journal_id}_cleaned.pdf
+        watermark_cleaning.json
       pages/
         page_index.jsonl
       images/
@@ -290,6 +296,18 @@ python -m journal_processing.cli --input-dir 期刊/data --output-root 期刊/ou
 ```text
 {journal_id}_article_unknown_p{page_no}_{block_or_window_id}_{task_type}_{sample_no}
 ```
+
+## 5.1 水印预清洗
+
+水印清洗应作为 PDF 进入页面渲染和 MinerU/OCR 前的预处理步骤，默认保留原始 PDF，只在输出目录生成清洗副本和清洗报告。对于 `hkxb.buaa.edu.cn` 这类航空期刊水印，优先使用 PDF 对象级处理：识别跨多数页面重复出现的 Form XObject 或图片 XObject，例如 `/Fm0` 中嵌套的固定尺寸水印图片，并从页面内容流中删除对应 `Do` 绘制调用。
+
+推荐策略：
+
+- 对象级删除作为主方案：命中重复 Form/图片水印时输出 `preprocessed/{journal_id}_cleaned.pdf`，后续页面图片、MinerU/OCR、块裁剪和视觉样本都使用清洗副本。
+- OCR 后文本兜底过滤：若水印仍被识别为文本块，应按 `hkxb.buaa.edu.cn`、`航空学报编辑部`、`Acta Aeronautica et Astronautica Sinica` 等模式标记为 `watermark`，不进入 `visible_text`、PT 语料或训练样本证据。
+- 缓存处理：一旦命中水印清洗，应强制重渲染页面图，并关闭旧 MinerU、normalized、sample 和 export 缓存复用，避免继续使用带水印的历史中间结果。
+- 风险控制：不要把灰度阈值擦除作为默认主方案，因为它可能破坏浅灰网格线、曲线、公式细笔画和表格线；仅在扫描件或无法访问 PDF 对象结构时作为 fallback。
+- 可追溯记录：清洗报告应记录 `source_pdf`、`cleaned_pdf`、页数、候选水印对象名、删除调用次数和是否清洗成功。
 
 ## 6. 标准化页面结构
 
@@ -648,21 +666,23 @@ python -m journal_processing.cli --input-dir 期刊/data --output-root 期刊/ou
 
 必须支持：
 1. 扫描输入 PDF，建立 manifest。
-2. 渲染页面图片，可配置 DPI/缩放。
-3. 抽取 PDF 文本层；对扫描型 PDF 保留 OCR 适配器接口。
-4. 标准化页面块，识别页眉、页脚、目录、文章首页、正文、参考文献等页面类型。
-5. 恢复双栏阅读顺序，保留通栏块、左栏、右栏、跨栏图表和不确定说明。
-6. 从单篇论文和整期期刊中切分文章，抽取文章元数据。
-7. 支持 11 类期刊任务：article_metadata_extraction、two_column_reading_order_reconstruction、page_to_journal_layout_description、section_heading_scope_alignment、section_keypoint_summary、figure_table_formula_to_text、method_experiment_condition_extraction、evidence_to_claim_chain、article_contribution_conclusion、cross_page_article_context、domain_knowledge_corpus。
-8. 默认生成全部任务；支持 --task 或 --tasks 指定子集。
-9. 支持 Qwen3-VL-8B/32B-Instruct 或 OpenAI-compatible VLM provider；没有模型服务时可生成启发式样本和模型调用输入。
-10. 输出统一中间样本、ShareGPT、Alpaca 和 PT JSONL。
-11. 所有样本保留 source_pdf、journal_id、article_id、page_index、block_id、task_type、page_type、pipeline_version 等溯源字段。
-12. 支持流式写入、断点续跑、失败页跳过、日志和基础指标。
+2. 对带重复图片/Form 水印的 PDF 进行对象级预清洗，生成清洗副本和报告。
+3. 渲染页面图片，可配置 DPI/缩放。
+4. 抽取 PDF 文本层；对扫描型 PDF 保留 OCR 适配器接口。
+5. 标准化页面块，识别页眉、页脚、目录、文章首页、正文、参考文献、水印等页面类型。
+6. 恢复双栏阅读顺序，保留通栏块、左栏、右栏、跨栏图表和不确定说明。
+7. 从单篇论文和整期期刊中切分文章，抽取文章元数据。
+8. 支持 11 类期刊任务：article_metadata_extraction、two_column_reading_order_reconstruction、page_to_journal_layout_description、section_heading_scope_alignment、section_keypoint_summary、figure_table_formula_to_text、method_experiment_condition_extraction、evidence_to_claim_chain、article_contribution_conclusion、cross_page_article_context、domain_knowledge_corpus。
+9. 默认生成全部任务；支持 --task 或 --tasks 指定子集。
+10. 支持 Qwen3-VL-8B/32B-Instruct 或 OpenAI-compatible VLM provider；没有模型服务时可生成启发式样本和模型调用输入。
+11. 输出统一中间样本、ShareGPT、Alpaca 和 PT JSONL。
+12. 所有样本保留 source_pdf、journal_id、article_id、page_index、block_id、task_type、page_type、pipeline_version 等溯源字段。
+13. 支持流式写入、断点续跑、失败页跳过、日志和基础指标。
 
 请优先保证：
 - 双栏读序正确。
 - 目录/编委/参考文献等低价值页面被过滤。
+- 斜向水印、版权网址和 OCR 误识别水印块不会进入正文、图文证据或 PT 语料。
 - 图表、公式、实验条件和结论证据能被回溯。
 - PT 语料只包含 text 字段。
 - 代码结构清晰，模块可替换，方便后续接入 MinerU/OCR/Qwen3-VL。
@@ -675,6 +695,7 @@ python -m journal_processing.cli --input-dir 期刊/data --output-root 期刊/ou
 代码模块对应关系：
 
 - `journal_processing/processing/ingest.py`：PDF 扫描、页数估计、哈希、manifest 和 `journal_id` 生成。
+- `journal_processing/processing/watermark.py`：识别重复 Form/Image 水印，生成清洗 PDF 和水印清洗报告。
 - `journal_processing/processing/pdf_backends.py`：PDF 解析适配层，支持 `auto`、`pymupdf`、`probe_json`、`null` 后端；后续 MinerU/OCR 只需实现同样的 `RawPdfPage/RawPdfBlock` 输出。
 - `journal_processing/processing/normalize.py`：期刊页面标准化、页面类型识别、语义块识别、双栏/通栏判定、阅读顺序恢复、文章切分和元数据初抽取。
 - `journal_processing/tasks/routing.py`：根据页面类型、文章上下文、小节标题、图表公式线索、方法关键词和结论关键词路由 11 类任务。
@@ -682,7 +703,7 @@ python -m journal_processing.cli --input-dir 期刊/data --output-root 期刊/ou
 - `journal_processing/tasks/validation.py`：格式校验、证据页校验、多页任务校验、PT 纯文本长度校验和图片路径校验。
 - `journal_processing/tasks/dedup.py`：基于任务类型、页面、证据块和输出内容的去重与每页任务数量控制。
 - `journal_processing/tasks/exporters.py`：导出 ShareGPT、Alpaca 和 `stage: pt` JSONL；PT 导出严格只保留 `text` 字段。
-- `journal_processing/app/pipeline.py`：端到端流水线。
+- `journal_processing/app/pipeline.py`：端到端流水线；在渲染和 MinerU/OCR 前接入水印清洗，命中清洗时强制刷新相关缓存。
 - `journal_processing/app/cli.py`：命令行入口。
 
 推荐运行命令：
