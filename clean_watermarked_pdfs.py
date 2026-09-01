@@ -20,19 +20,43 @@ def operator_text(operator: Any) -> str:
     return str(operator)
 
 
+def resolve_pdf_object(obj: Any) -> Any:
+    for _ in range(8):
+        if obj is None:
+            return None
+        get_object = getattr(obj, "get_object", None)
+        if not callable(get_object):
+            return obj
+        try:
+            resolved = get_object()
+        except Exception:
+            return None
+        if resolved is obj:
+            return obj
+        obj = resolved
+    return obj
+
+
+def pdf_dict(obj: Any) -> Any:
+    resolved = resolve_pdf_object(obj)
+    get_value = getattr(resolved, "get", None)
+    return resolved if callable(get_value) else {}
+
+
 def xobject_dict(page: Any) -> Any:
-    resources = page.get("/Resources") or {}
-    xobjects = resources.get("/XObject")
-    return xobjects.get_object() if xobjects else {}
+    resources = pdf_dict(page.get("/Resources"))
+    return pdf_dict(resources.get("/XObject"))
 
 
 def form_has_watermark_image(form: Any) -> bool:
-    resources = form.get("/Resources") or {}
-    xobjects = resources.get("/XObject")
+    resources = pdf_dict(form.get("/Resources"))
+    xobjects = pdf_dict(resources.get("/XObject"))
     if not xobjects:
         return False
-    for nested_ref in xobjects.get_object().values():
-        nested = nested_ref.get_object()
+    for nested_ref in xobjects.values():
+        nested = pdf_dict(nested_ref)
+        if not nested:
+            continue
         if str(nested.get("/Subtype")) != "/Image":
             continue
         size = (int(nested.get("/Width") or 0), int(nested.get("/Height") or 0))
@@ -64,7 +88,9 @@ def page_watermark_forms(reader: PdfReader, page: Any) -> list[str]:
         name = str(operands[0])
         if name not in xobjects:
             continue
-        form = xobjects[name].get_object()
+        form = pdf_dict(xobjects[name])
+        if not form:
+            continue
         if str(form.get("/Subtype")) == "/Form" and is_watermark_form(name, form):
             result.append(name)
     return result
@@ -131,3 +157,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

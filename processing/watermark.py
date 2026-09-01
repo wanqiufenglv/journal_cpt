@@ -33,10 +33,32 @@ def _operator_text(operator: Any) -> str:
     return str(operator)
 
 
+def _resolve_pdf_object(obj: Any) -> Any:
+    for _ in range(8):
+        if obj is None:
+            return None
+        get_object = getattr(obj, "get_object", None)
+        if not callable(get_object):
+            return obj
+        try:
+            resolved = get_object()
+        except Exception:
+            return None
+        if resolved is obj:
+            return obj
+        obj = resolved
+    return obj
+
+
+def _pdf_dict(obj: Any) -> Any:
+    resolved = _resolve_pdf_object(obj)
+    get_value = getattr(resolved, "get", None)
+    return resolved if callable(get_value) else {}
+
+
 def _xobject_dict(page: Any) -> Any:
-    resources = page.get("/Resources") or {}
-    xobjects = resources.get("/XObject")
-    return xobjects.get_object() if xobjects else {}
+    resources = _pdf_dict(page.get("/Resources"))
+    return _pdf_dict(resources.get("/XObject"))
 
 
 def _form_has_configured_image(form: Any, cfg: dict[str, Any]) -> bool:
@@ -47,12 +69,14 @@ def _form_has_configured_image(form: Any, cfg: dict[str, Any]) -> bool:
     }
     if not expected_sizes:
         return False
-    resources = form.get("/Resources") or {}
-    xobjects = resources.get("/XObject")
+    resources = _pdf_dict(form.get("/Resources"))
+    xobjects = _pdf_dict(resources.get("/XObject"))
     if not xobjects:
         return False
-    for nested_ref in xobjects.get_object().values():
-        nested = nested_ref.get_object()
+    for nested_ref in xobjects.values():
+        nested = _pdf_dict(nested_ref)
+        if not nested:
+            continue
         if str(nested.get("/Subtype")) != "/Image":
             continue
         size = (int(nested.get("/Width") or 0), int(nested.get("/Height") or 0))
@@ -87,7 +111,9 @@ def _page_form_invocations(reader: Any, page: Any, cfg: dict[str, Any]) -> list[
         name = str(operands[0])
         if name not in xobjects:
             continue
-        form = xobjects[name].get_object()
+        form = _pdf_dict(xobjects[name])
+        if not form:
+            continue
         if str(form.get("/Subtype")) == "/Form" and _is_candidate_form(name, form, cfg):
             result.append(name)
     return result
@@ -190,3 +216,4 @@ def clean_pdf_watermarks(journal: JournalRecord, cfg: dict[str, Any]) -> Waterma
     )
     write_json(report_path, asdict(result))
     return result
+
